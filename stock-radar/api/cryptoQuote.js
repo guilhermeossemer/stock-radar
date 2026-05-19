@@ -23,16 +23,34 @@ function parseKlines(rows) {
 }
 
 async function fetchJson(url) {
-  const res = await fetch(url, {
-    headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(9000),
-  });
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        // add a User-Agent to reduce bot-blocking by CDNs
+        "User-Agent": "Mozilla/5.0 (compatible; StockRadar/1.0; +https://example.com)",
+      },
+      signal: AbortSignal.timeout(12000),
+    });
 
-  if (!res.ok) {
+    if (res.ok) {
+      try {
+        return await res.json();
+      } catch (err) {
+        throw new Error('JSON parse error from Binance')
+      }
+    }
+
+    // Retry on rate-limit, legal block (451) or server errors
+    if ((res.status === 429 || res.status === 451 || res.status >= 500) && attempt < maxAttempts) {
+      const wait = 300 * attempt; // backoff: 300ms, 600ms, ...
+      await new Promise((r) => setTimeout(r, wait));
+      continue;
+    }
+
     throw new Error(`Binance returned ${res.status}`);
   }
-
-  return res.json();
 }
 
 async function fetchBinanceKlines(symbol, interval, limit = 200) {
