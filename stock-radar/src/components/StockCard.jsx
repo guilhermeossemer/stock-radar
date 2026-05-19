@@ -20,8 +20,10 @@ export default function StockCard({ data, index }) {
           </div>
         </div>
         <div className="header-right">
-          <div className="price">R$ {data.currentPrice.toFixed(2)}</div>
-          <div className={`pill pill-${categoryClass}`}>{data.category.replace("_", " ")}</div>
+          <div className="price">{data.currencySymbol ?? "R$"} {data.currentPrice.toFixed(2)}</div>
+          <div className={`pill pill-${categoryClass}`}>
+            {data.category === "OBSERVACAO" ? "OBSERVAÇÃO" : data.category.replace("_", " ")}
+          </div>
           <ScoreBadge score={data.score} />
         </div>
       </div>

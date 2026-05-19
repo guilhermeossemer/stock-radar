@@ -24,11 +24,12 @@ async function requestApi(path, params = {}) {
   return ensureOk(res, body);
 }
 
-export async function fetchQuote(ticker) {
+export async function fetchQuote(ticker, market = 'stocks') {
   if (!ticker) {
     throw new Error('Ticker inválido');
   }
-  return requestApi(`${API_BASE}/quote`, { ticker });
+  const endpoint = market === 'crypto' ? `${API_BASE}/cryptoQuote` : `${API_BASE}/quote`;
+  return requestApi(endpoint, { ticker });
 }
 
 export async function fetchHistory(ticker, interval = '1d', range = '6mo') {

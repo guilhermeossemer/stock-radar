@@ -2,9 +2,60 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
+function createJsonResponse(res) {
+  return {
+    status(code) {
+      res.statusCode = code
+      return this
+    },
+    json(body) {
+      const payload = JSON.stringify(body)
+      res.setHeader('Content-Type', 'application/json')
+      res.end(payload)
+    },
+  }
+}
+
+function createApiMiddleware(handler) {
+  return async (req, res, next) => {
+    try {
+      const url = new URL(req.url, `http://${req.headers.host}`)
+      req.query = Object.fromEntries(url.searchParams.entries())
+      req.url = url.pathname
+      req.method = req.method || 'GET'
+      const extendedRes = createJsonResponse(res)
+      await handler(req, extendedRes)
+    } catch (error) {
+      res.statusCode = 500
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ success: false, error: error.message }))
+    }
+  }
+}
+
+const apiRoutes = {
+  '/api/quote': () => import('./api/quote.js').then((mod) => mod.default),
+  '/api/cryptoQuote': () => import('./api/cryptoQuote.js').then((mod) => mod.default),
+  '/api/history': () => import('./api/history.js').then((mod) => mod.default),
+}
+
 export default defineConfig({
   plugins: [
     react(),
+    {
+      name: 'vite-api-middleware',
+      async configureServer(server) {
+        server.middlewares.use(async (req, res, next) => {
+          const route = req.url?.split('?')[0]
+          const loader = apiRoutes[route]
+          if (!loader) {
+            return next()
+          }
+          const handler = await loader()
+          return createApiMiddleware(handler)(req, res, next)
+        })
+      },
+    },
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: [

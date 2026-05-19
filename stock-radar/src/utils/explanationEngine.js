@@ -15,12 +15,14 @@ export function explainAnalysis(analysis) {
   if (healthyPullback) positives.push("Pullback organizado próximo a suporte");
   if (inFibZone) positives.push("Zona Fibonacci");
   if (riskReward >= 2) positives.push("R/R favorável");
+  if (category === "OBSERVACAO") positives.push("Aguardando reação estrutural");
+  if (category === "PULLBACK") positives.push("Pullback em andamento");
 
-  if (category === "EVITAR") negatives.push("Contexto técnico fraco");
+  if (category === "EVITAR") negatives.push("Deterioração estrutural real");
   if (multiTimeframe.daily?.status === "bearish") negatives.push("Tendência diária negativa");
-  if (multiTimeframe.fourHour?.status === "extended") negatives.push("Pullback estendido ou perda estrutural no 4H");
-  if (multiTimeframe.oneHour?.status === "rejected") negatives.push("Confirmação 1H rejeitada");
-  if (volume.relative < 1) negatives.push("Volume fraco");
+  if (multiTimeframe.fourHour?.status === "extended") negatives.push("Perda estrutural ou aceleração bearish no 4H");
+  if (multiTimeframe.oneHour?.status === "rejected") negatives.push("Momentum 1H enfraquecido ou suporte perdido");
+  if (volume.relative < 0.9) negatives.push("Momentum enfraquecido");
   if (overStretched) negatives.push("Ativo esticado longe da EMA20");
   if (sr?.nearResistance) negatives.push("Resistência próxima");
 

@@ -1,9 +1,11 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { fetchQuote } from "./services/yahooService.js";
 import { analyzeStock } from "./utils/scoring.js";
+import { analyzeCrypto } from "./utils/cryptoScoring.js";
 import StockCard from "./components/StockCard.jsx";
 
-const STORAGE_KEY = "stockRadarTickers";
+const STOCK_STORAGE_KEY = "stockRadarTickers";
+const CRYPTO_STORAGE_KEY = "stockRadarCryptoTickers";
 const DEFAULT_TICKERS = [
   "ITUB4",
   "BBDC4",
@@ -37,24 +39,49 @@ const DEFAULT_TICKERS = [
   "ORVR3",
   "VBBR3",
 ];
+const DEFAULT_CRYPTO_TICKERS = [
+  "BTCUSDT",
+  "ETHUSDT",
+  "SOLUSDT",
+  "BNBUSDT",
+  "XRPUSDT",
+  "DOGEUSDT",
+  "AVAXUSDT",
+  "LINKUSDT",
+  "ARBUSDT",
+  "SUIUSDT",
+];
+const TABS = [
+  { key: "stocks", label: "Ações" },
+  { key: "crypto", label: "Criptos" },
+];
 
-function loadSavedTickers() {
-  if (typeof window === "undefined") return DEFAULT_TICKERS;
+function loadSavedTickers(storageKey, fallback) {
+  if (typeof window === "undefined") return fallback;
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
-    if (!stored) return DEFAULT_TICKERS;
+    const stored = localStorage.getItem(storageKey);
+    if (!stored) return fallback;
     const parsed = JSON.parse(stored);
     if (Array.isArray(parsed) && parsed.length > 0) return parsed.map((ticker) => String(ticker).trim().toUpperCase()).filter(Boolean);
   } catch (error) {
     console.warn("Failed to load saved tickers", error);
   }
-  return DEFAULT_TICKERS;
+  return fallback;
+}
+
+function getTickerList(input) {
+  return input
+    .split(",")
+    .map((ticker) => ticker.trim().toUpperCase())
+    .filter(Boolean);
 }
 
 const FILTER_OPTIONS = [
   { key: "all", label: "Todas", className: "all" },
   { key: "COMPRA_FORTE", label: "Compra Forte", className: "compra_forte" },
   { key: "COMPRA", label: "Compra", className: "compra" },
+  { key: "OBSERVACAO", label: "Observação", className: "observacao" },
+  { key: "PULLBACK", label: "Pullback", className: "pullback" },
   { key: "ATENÇÃO", label: "Atenção", className: "atencao" },
   { key: "ESTICADO", label: "Esticado", className: "esticado" },
   { key: "RANGE", label: "Range", className: "range" },
@@ -64,41 +91,41 @@ const FILTER_OPTIONS = [
 
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [tickerInput, setTickerInput] = useState(() => loadSavedTickers().join(", "));
-  const [newTicker, setNewTicker]     = useState("");
-  const [results, setResults]         = useState([]);
-  const [errors, setErrors]           = useState([]);
-  const [loading, setLoading]         = useState(false);
-  const [progress, setProgress]       = useState({done:0,total:0});
-  const [lastScan, setLastScan]       = useState(null);
-  const [filter, setFilter]           = useState("all");
-  const [scanDone, setScanDone]       = useState(false);
+  const [activeTab, setActiveTab] = useState("stocks");
+  const [tickerInputs, setTickerInputs] = useState(() => ({
+    stocks: loadSavedTickers(STOCK_STORAGE_KEY, DEFAULT_TICKERS).join(", "),
+    crypto: loadSavedTickers(CRYPTO_STORAGE_KEY, DEFAULT_CRYPTO_TICKERS).join(", "),
+  }));
+  const [newTicker, setNewTicker] = useState("");
+  const [results, setResults] = useState({ stocks: [], crypto: [] });
+  const [errors, setErrors] = useState({ stocks: [], crypto: [] });
+  const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState({ done: 0, total: 0 });
+  const [lastScan, setLastScan] = useState({ stocks: null, crypto: null });
+  const [filter, setFilter] = useState("all");
+  const [scanDone, setScanDone] = useState({ stocks: false, crypto: false });
   const [proxyStatus, setProxyStatus] = useState("");
 
-  const tickers = useMemo(
-    () => tickerInput
-      .split(",")
-      .map((ticker) => ticker.trim().toUpperCase())
-      .filter(Boolean),
-    [tickerInput]
-  );
+  const tickerInput = tickerInputs[activeTab];
+  const tickers = useMemo(() => getTickerList(tickerInput), [tickerInput]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(tickers));
+      localStorage.setItem(STOCK_STORAGE_KEY, JSON.stringify(getTickerList(tickerInputs.stocks)));
+      localStorage.setItem(CRYPTO_STORAGE_KEY, JSON.stringify(getTickerList(tickerInputs.crypto)));
     } catch (error) {
       console.warn("Failed to save tickers", error);
     }
-  }, [tickers]);
+  }, [tickerInputs]);
 
   const runAnalysis = useCallback(async () => {
     setLoading(true);
-    setScanDone(false);
-    setResults([]);
-    setErrors([]);
+    setScanDone((prev) => ({ ...prev, [activeTab]: false }));
+    setResults((prev) => ({ ...prev, [activeTab]: [] }));
+    setErrors((prev) => ({ ...prev, [activeTab]: [] }));
     setProgress({ done: 0, total: tickers.length });
-    setProxyStatus("Detectando proxy disponível...");
+    setProxyStatus("Coletando dados...");
 
     const good = [];
     const bad = [];
@@ -107,49 +134,54 @@ export default function App() {
       const ticker = tickers[i];
       try {
         setProxyStatus(`Buscando ${ticker}...`);
-        const raw = await fetchQuote(ticker);
-        const analyzed = analyzeStock(raw);
+        const raw = await fetchQuote(ticker, activeTab);
+        const analyzed = activeTab === "crypto" ? analyzeCrypto(raw) : analyzeStock(raw);
         good.push(analyzed);
       } catch (error) {
         bad.push({ ticker, msg: error?.message || "Erro desconhecido" });
       }
       setProgress({ done: i + 1, total: tickers.length });
-      setResults([...good].sort((a, b) => b.score - a.score));
+      setResults((prev) => ({ ...prev, [activeTab]: [...good].sort((a, b) => b.score - a.score) }));
     }
 
-    setErrors(bad);
-    setLastScan(new Date());
+    setErrors((prev) => ({ ...prev, [activeTab]: bad }));
+    setLastScan((prev) => ({ ...prev, [activeTab]: new Date() }));
     setLoading(false);
-    setScanDone(true);
+    setScanDone((prev) => ({ ...prev, [activeTab]: true }));
     setProxyStatus("");
-  }, [tickers]);
+  }, [tickers, activeTab]);
 
   const addTicker = () => {
     const ticker = newTicker.trim().toUpperCase();
     if (!ticker) return;
     if (!tickers.includes(ticker)) {
-      setTickerInput([...tickers, ticker].join(", "));
+      setTickerInputs((prev) => ({ ...prev, [activeTab]: [...tickers, ticker].join(", ") }));
     }
     setNewTicker("");
   };
 
   const removeTicker = (ticker) => {
-    setTickerInput(tickers.filter((item) => item !== ticker).join(", "));
+    setTickerInputs((prev) => ({ ...prev, [activeTab]: tickers.filter((item) => item !== ticker).join(", ") }));
   };
 
+  const currentResults = results[activeTab];
+  const currentErrors = errors[activeTab];
+  const currentScanDone = scanDone[activeTab];
+  const currentLastScan = lastScan[activeTab];
+
   const filteredResults = useMemo(() => {
-    if (filter === "all") return results;
-    return results.filter((item) => item.category === filter);
-  }, [filter, results]);
+    if (filter === "all") return currentResults;
+    return currentResults.filter((item) => item.category === filter);
+  }, [filter, currentResults]);
 
   const counts = useMemo(
     () => FILTER_OPTIONS.reduce((acc, option) => {
       acc[option.key] = option.key === "all"
-        ? results.length
-        : results.filter((item) => item.category === option.key).length;
+        ? currentResults.length
+        : currentResults.filter((item) => item.category === option.key).length;
       return acc;
     }, {}),
-    [results]
+    [currentResults]
   );
 
   const progressPct = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
@@ -173,6 +205,11 @@ export default function App() {
         .logo{font-size:30px;font-weight:800;letter-spacing:-1.5px;background:linear-gradient(120deg,#4da8ff 20%,#38c768);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
         .sub{font-size:11px;color:var(--muted);font-family:var(--mono);margin-top:3px}
         .last{font-size:11px;color:var(--blue);font-family:var(--mono);margin-top:3px}
+
+        .tab-bar{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+        .tab{padding:10px 18px;border-radius:999px;background:var(--surf);border:1px solid var(--border);color:var(--text);font-family:var(--mono);font-size:12px;cursor:pointer;transition:all .2s}
+        .tab:hover{border-color:var(--blue)}
+        .tab.active{background:linear-gradient(135deg,#1e8c3a,#1a5fb5);color:#fff;border-color:transparent;box-shadow:0 10px 30px rgba(0,0,0,.12)}
 
         .ctrl{background:var(--surf);border:1px solid var(--border);border-radius:12px;padding:18px;margin-bottom:16px}
         .ctrl-title{font-size:10px;font-weight:700;color:var(--muted);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:12px}
@@ -201,6 +238,8 @@ export default function App() {
         .fpill-all{border-color:var(--border);color:var(--muted)}.fpill-all.active,.fpill-all:hover{border-color:var(--blue);color:var(--blue)}
         .fpill-compra_forte{border-color:var(--grn);color:var(--grn)}.fpill-compra_forte.active{background:rgba(56,199,104,.1)}
         .fpill-compra{border-color:var(--blue);color:var(--blue)}.fpill-compra.active{background:rgba(77,168,255,.08)}
+        .fpill-observacao{border-color:#d28d1b;color:#d28d1b}.fpill-observacao.active{background:rgba(210,141,27,.1)}
+        .fpill-pullback{border-color:#f3c13a;color:#f3c13a}.fpill-pullback.active{background:rgba(243,193,58,.12)}
         .fpill-atencao{border-color:var(--amber);color:var(--amber)}.fpill-atencao.active{background:rgba(232,184,75,.1)}
         .fpill-esticado{border-color:var(--red);color:var(--red)}.fpill-esticado.active{background:rgba(245,83,74,.1)}
         .fpill-range{border-color:var(--purple);color:var(--purple)}.fpill-range.active{background:rgba(183,138,255,.1)}
@@ -328,6 +367,8 @@ export default function App() {
         .pill{font-size:10px;font-weight:700;text-transform:uppercase;padding:5px 10px;border-radius:999px;border:1px solid;display:inline-flex;align-items:center;gap:5px}
         .pill-compra_forte{color:#2a6f38;border-color:rgba(56,199,104,.3);background:rgba(56,199,104,.08)}
         .pill-compra{color:#2a72d2;border-color:rgba(77,168,255,.3);background:rgba(77,168,255,.08)}
+        .pill-observacao{color:#d28d1b;border-color:rgba(210,141,27,.3);background:rgba(210,141,27,.08)}
+        .pill-pullback{color:#f3c13a;border-color:rgba(243,193,58,.3);background:rgba(243,193,58,.08)}
         .pill-atencao{color:#b47b1d;border-color:rgba(232,184,75,.3);background:rgba(232,184,75,.08)}
         .pill-esticado{color:#b72f23;border-color:rgba(245,83,74,.3);background:rgba(245,83,74,.08)}
         .pill-range{color:#6745a7;border-color:rgba(183,138,255,.3);background:rgba(183,138,255,.08)}
@@ -347,14 +388,18 @@ export default function App() {
         .badge-row{display:flex;flex-wrap:wrap;gap:10px;padding:0 18px 18px}
         .card-compra_forte{border-color:rgba(56,199,104,.3)}
         .card-compra{border-color:rgba(77,168,255,.3)}
+        .card-observacao{border-color:rgba(210,141,27,.3)}
+        .card-pullback{border-color:rgba(243,193,58,.3)}
         .card-atencao{border-color:rgba(232,184,75,.3)}
         .card-esticado{border-color:rgba(245,83,74,.3)}
         .card-range{border-color:rgba(183,138,255,.3)}
         .card-evitar{border-color:rgba(106,117,133,.3)}
         .stripe-compra_forte{background:linear-gradient(90deg,#38c768,#1e8c3a)}
         .stripe-compra{background:linear-gradient(90deg,#4da8ff,#2a72d2)}
+        .stripe-observacao{background:linear-gradient(90deg,#d2aa3f,#b47e18)}
+        .stripe-pullback{background:linear-gradient(90deg,#f3c13a,#d18a16)}
         .stripe-atencao{background:linear-gradient(90deg,#e8b84b,#c97d1a)}
-        .stripe-esticado{background:linear-gradient(90deg,#f5534a,#d83223)}
+        .stripe-esticado{background:linear-gradient(90deg,#f5534a,#d8323)}
         .stripe-range{background:linear-gradient(90deg,#b78aff,#7f59d1)}
         .stripe-evitar{background:linear-gradient(90deg,#7d8698,#5f6571)}
         .metrics-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:0 18px 18px}
@@ -378,55 +423,73 @@ export default function App() {
       <div className="app">
         <div className="hdr">
           <div className="logo">📈 StockRadar</div>
-          <div className="sub">Análise Técnica Pós-Mercado · Yahoo Finance · B3 — Dados Reais</div>
-          {lastScan && <div className="last">Último scan: {lastScan.toLocaleTimeString("pt-BR")} · {lastScan.toLocaleDateString("pt-BR")}</div>}
+          <div className="sub">Análise Técnica · Yahoo Finance / Binance · Dados Reais</div>
+          {currentLastScan && <div className="last">Último scan: {currentLastScan.toLocaleTimeString("pt-BR")} · {currentLastScan.toLocaleDateString("pt-BR")}</div>}
         </div>
 
-        {/* Aviso sobre CORS */}
-        {!scanDone && !loading && (
+        <div className="tab-bar">
+          {TABS.map((tab) => (
+            <button
+              key={tab.key}
+              className={`tab ${activeTab === tab.key ? "active" : ""}`}
+              onClick={() => setActiveTab(tab.key)}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {!currentScanDone && !loading && (
           <div className="warn-box">
-            <strong>⚠️ Importante — Se ocorrer erro "Failed to fetch":</strong><br/>
-            O navegador bloqueia chamadas entre domínios (CORS). O app usa proxies automáticos para contornar isso.<br/>
-            Se ainda falhar, instale a extensão <strong>CORS Unblock</strong> ou <strong>Allow CORS</strong> no Chrome/Firefox e ative-a antes de rodar a análise.<br/>
-            <code>Chrome Web Store → buscar "Allow CORS: Access-Control-Allow-Origin"</code>
+            <strong>⚠️ Importante:</strong> o scanner crypto usa Binance API via backend, o scanner de ações usa Yahoo Finance. O app evita CORS no navegador usando API interna.
           </div>
         )}
 
         <div className="ctrl">
-          <div className="ctrl-title">Lista de Ações (B3)</div>
+          <div className="ctrl-title">{activeTab === "crypto" ? "Lista de Criptos (Binance)" : "Lista de Ações (B3)"}</div>
           <div className="chips">
-            {tickers.map(t=>(
-              <div key={t} className="chip">{t}<button className="chip-x" onClick={()=>removeTicker(t)}>×</button></div>
+            {tickers.map((t) => (
+              <div key={t} className="chip">
+                {t}
+                <button className="chip-x" onClick={() => removeTicker(t)}>×</button>
+              </div>
             ))}
           </div>
           <div className="add-row">
-            <input className="add-in" placeholder="ex: ITSA4" value={newTicker}
-              onChange={e=>setNewTicker(e.target.value.toUpperCase())}
-              onKeyDown={e=>e.key==="Enter"&&addTicker()} maxLength={6}/>
+            <input
+              className="add-in"
+              placeholder={activeTab === "crypto" ? "ex: BTCUSDT" : "ex: ITSA4"}
+              value={newTicker}
+              onChange={(e) => setNewTicker(e.target.value.toUpperCase())}
+              onKeyDown={(e) => e.key === "Enter" && addTicker()}
+              maxLength={activeTab === "crypto" ? 12 : 6}
+            />
             <button className="btn btn-add" onClick={addTicker}>+ Adicionar</button>
           </div>
           <button className="btn btn-scan" onClick={runAnalysis} disabled={loading}>
-            {loading?`🔍 ${proxyStatus||"Carregando..."} (${progress.done}/${progress.total})`:"🚀 Rodar Análise (Dados Reais)"}
+            {loading ? `🔍 ${proxyStatus || "Carregando..."} (${progress.done}/${progress.total})` : `🚀 ${activeTab === "crypto" ? "Rodar Scanner de Criptos" : "Rodar Scanner de Ações"}`}
           </button>
         </div>
 
         {loading && (
           <div className="prog">
-            <div className="prog-txt">{progress.done}/{progress.total} ações — {progressPct}% {proxyStatus&&`· ${proxyStatus}`}</div>
+            <div className="prog-txt">{progress.done}/{progress.total} ativos · {progressPct}% {proxyStatus && `· ${proxyStatus}`}</div>
             <div className="prog-wrap"><div className="prog-bar" style={{width:`${progressPct}%`}}/></div>
           </div>
         )}
 
-        {errors.length>0 && (
+        {currentErrors.length > 0 && (
           <div className="err-box">
-            <div className="err-title">⚠ Falha em {errors.length} ação(ões) — tente ativar extensão CORS no navegador:</div>
+            <div className="err-title">⚠ Falha em {currentErrors.length} ativo(s)</div>
             <div className="err-list">
-              {errors.map(e=><span key={e.ticker} className="err-item" title={e.msg}>{e.ticker}: {e.msg}</span>)}
+              {currentErrors.map((e) => (
+                <span key={e.ticker} className="err-item" title={e.msg}>{e.ticker}: {e.msg}</span>
+              ))}
             </div>
           </div>
         )}
 
-        {scanDone && results.length > 0 && (
+        {currentScanDone && currentResults.length > 0 && (
           <div className="fbar">
             {FILTER_OPTIONS.map((option) => (
               <div
@@ -441,10 +504,10 @@ export default function App() {
           </div>
         )}
 
-        {loading && results.length === 0 ? (
+        {loading && currentResults.length === 0 ? (
           <div className="loading">
             <div className="spinner" />
-            <div className="load-txt">Buscando dados reais da B3...</div>
+            <div className="load-txt">Buscando dados reais de {activeTab === "crypto" ? "criptos" : "ações"}...</div>
             <div className="load-sub">{proxyStatus}</div>
           </div>
         ) : filteredResults.length > 0 ? (
@@ -453,21 +516,21 @@ export default function App() {
               <StockCard key={item.ticker} data={item} index={index} />
             ))}
           </div>
-        ) : scanDone && !loading ? (
-          <div className="empty"><div className="empty-ico">🔎</div>Nenhuma ação nesta categoria.</div>
-        ) : !scanDone ? (
+        ) : currentScanDone && !loading ? (
+          <div className="empty"><div className="empty-ico">🔎</div>Nenhum ativo nesta categoria.</div>
+        ) : !currentScanDone ? (
           <div className="empty">
             <div className="empty-ico">📊</div>
-            <div>Clique em <strong>Rodar Scanner</strong> para buscar dados reais</div>
+            <div>Clique em <strong>{activeTab === "crypto" ? "Rodar Scanner de Criptos" : "Rodar Scanner de Ações"}</strong> para buscar dados reais</div>
           </div>
         ) : null}
 
-        {scanDone&&(
+        {currentScanDone && (
           <div className="legend">
-            <strong>Critérios (5 pts):</strong> EMA 20&gt;50&gt;100 · Preço acima EMAs · RSI 40–70 · Estocástico OK · Tendência de alta<br/>
-            <strong>S&amp;R:</strong> Pivôs dos últimos 90 candles · Confluência = nível mais forte · Clique no card para ver<br/>
-            <strong>R/R:</strong> ≥2x 🟢 ótimo · 1–2x 🟡 aceitável · &lt;1x 🔴 ruim<br/>
-            <strong>COMPRA FORTE</strong> = score alto + pullback saudável + R/R ≥ 2 · <strong>COMPRA</strong> = setup em Fibonacci/pullback · <strong>ATENÇÃO</strong> = potencial moderado · <strong>ESTICADO</strong> / <strong>EVITAR</strong> = evitar ou setup fraco
+            <strong>Critérios (4H / 1H):</strong> EMA 20&gt;50&gt;100 · Preço acima EMAs · Volume + momentum · Pullback saudável · Multi-timeframe<br/>
+            <strong>S&amp;R:</strong> Pivôs de 4H · Confluência = nível mais forte · Clique no card para ver<br/>
+            <strong>R/R:</strong> ≥1.8x 🟢 ótimo · 1–1.8x 🟡 aceitável · &lt;1x 🔴 ruim<br/>
+            <strong>COMPRA FORTE</strong> = setup agressivo + confirmação 1H + volume elevado · <strong>COMPRA</strong> = alto potencial · <strong>OBSERVAÇÃO</strong> = ativo enfraquecido, aguardando reação · <strong>PULLBACK</strong> = correção estruturada acima da EMA100 · <strong>ESTICADO</strong> / <strong>EVITAR</strong> = deterioração estrutural real
           </div>
         )}
       </div>
