@@ -1,6 +1,4 @@
-import BinanceModule from 'binance-api-node';
-
-const Binance = BinanceModule.default;
+const BYBIT_BASE = "https://api.bybit.com/v5/market";
 const _quoteCache = new Map();
 const _klinesCache = new Map();
 
@@ -22,22 +20,88 @@ function formatTicker(ticker) {
   if (!ticker || typeof ticker !== "string") {
     throw new Error("Ticker inválido");
   }
-  const symbol = ticker.toUpperCase().trim().replace(/[^A-Z0-9]/g, "");
-  if (!/^[A-Z0-9]{6,12}$/.test(symbol)) {
+  let symbol = ticker.toUpperCase().trim().replace(/[^A-Z0-9]/g, "");
+  if (!/^[A-Z0-9]{3,}$/.test(symbol)) {
     throw new Error("Ticker de cripto inválido");
   }
-  return symbol;
+  // Remove USDT se já estiver no final e adiciona novamente
+  symbol = symbol.replace(/USDT$/, "");
+  return symbol + "USDT";
 }
 
-function parseKlines(rows) {
-  return rows.map((candle) => ({
-    date: new Date(candle.openTime).toISOString(),
-    open: parseFloat(candle.open),
-    high: parseFloat(candle.high),
-    low: parseFloat(candle.low),
-    close: parseFloat(candle.close),
-    volume: parseFloat(candle.volume),
+function parseKlinesBybit(rows) {
+  // Formato Bybit: [timestamp, open, high, low, close, volume, quoteAssetVolume]
+  return rows.map((row) => ({
+    date: new Date(parseInt(row[0])).toISOString(),
+    open: parseFloat(row[1]),
+    high: parseFloat(row[2]),
+    low: parseFloat(row[3]),
+    close: parseFloat(row[4]),
+    volume: parseFloat(row[5]),
   }));
+}
+
+async function fetchJson(url) {
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(12000),
+      });
+
+      if (res.ok) {
+        const json = await res.json();
+        if (json.retCode === 0 || json.retCode === "0") {
+          return json.result;
+        }
+        throw new Error(`Bybit API error: ${json.retMsg || "unknown"}`);
+      }
+
+      if ((res.status === 429 || res.status >= 500) && attempt < maxAttempts) {
+        const wait = res.status === 429 ? 1000 * attempt * attempt : 300 * attempt;
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+
+      throw new Error(`Bybit returned ${res.status}`);
+    } catch (err) {
+      if (attempt < maxAttempts && (err.message.includes("429") || err.message.includes("500"))) {
+        const wait = 500 * attempt;
+        await new Promise((r) => setTimeout(r, wait));
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
+async function fetchBybitKlines(symbol, interval, limit = 200) {
+  const cacheKey = `${symbol}:klines:${interval}`;
+  const cached = cacheGet(_klinesCache, cacheKey, 1000 * 60);
+  if (cached) return cached;
+
+  const intervalMap = { "4h": "240", "1h": "60" };
+  const bybitInterval = intervalMap[interval] || interval;
+  const url = `${BYBIT_BASE}/kline?category=spot&symbol=${symbol}&interval=${bybitInterval}&limit=${limit}`;
+  
+  const data = await fetchJson(url);
+  if (!data || !data.list || !Array.isArray(data.list)) {
+    throw new Error("Dados de candle inválidos");
+  }
+
+  const parsed = parseKlinesBybit(data.list.reverse()); // Bybit retorna invertido
+  cacheSet(_klinesCache, cacheKey, parsed);
+  return parsed;
+}
+
+async function fetchBybitTicker(symbol) {
+  const url = `${BYBIT_BASE}/tickers?category=spot&symbol=${symbol}`;
+  const data = await fetchJson(url);
+  if (!data || !data.list || !data.list[0]) {
+    throw new Error("Dados de ticker inválidos");
+  }
+  return data.list[0];
 }
 
 export default async function handler(req, res) {
@@ -48,11 +112,6 @@ export default async function handler(req, res) {
   const ticker = Array.isArray(req.query.ticker) ? req.query.ticker[0] : req.query.ticker;
   if (!ticker) {
     return res.status(400).json({ success: false, error: "Parâmetro ticker é obrigatório" });
-  }
-
-  if (!process.env.BINANCE_API_KEY) {
-    console.error("[api/cryptoQuote] BINANCE_API_KEY is not configured");
-    return res.status(500).json({ success: false, error: "Binance API key não configurada" });
   }
 
   try {
@@ -71,57 +130,38 @@ export async function fetchCryptoQuoteData(ticker) {
   if (cachedQuote) return cachedQuote;
 
   try {
-    const client = Binance({
-      apiKey: process.env.BINANCE_API_KEY,
-      apiSecret: '', // não usamos secret para leitura de dados públicos
-    });
-
-    // Fetch candles para 4H e 1H
-    const [fourHourData, oneHourData, tickerInfo] = await Promise.all([
-      client.candles({ symbol, interval: '4h', limit: 120 }),
-      client.candles({ symbol, interval: '1h', limit: 240 }),
-      client.allBookTickers().then(tickers => tickers.find(t => t.symbol === symbol)),
+    const [fourHourData, oneHourData, tickerDetails] = await Promise.all([
+      fetchBybitKlines(symbol, "4h", 120),
+      fetchBybitKlines(symbol, "1h", 240),
+      fetchBybitTicker(symbol),
     ]);
 
-    // Se candles vazios, tenta usar cache antigo
     if (!fourHourData || fourHourData.length === 0 || !oneHourData || oneHourData.length === 0) {
       if (cachedQuote) {
         console.warn(`[api/cryptoQuote] Empty candles for ${symbol}, using cached quote`);
         return cachedQuote;
       }
-      throw new Error('Dados de candles indisponíveis');
+      throw new Error("Dados de candles indisponíveis");
     }
 
-    const fourHour = parseKlines(fourHourData);
-    const oneHour = parseKlines(oneHourData);
-
-    // Extrair preço atual do último candle 1H e calcular dayChange
-    const lastPrice = parseFloat(oneHour[oneHour.length - 1].close);
-    
-    // Calcular dayChange: comparar com preço de ~24h atrás (máx 24 velas de 1h)
-    let prevPrice = lastPrice;
-    if (oneHour.length >= 24) {
-      prevPrice = parseFloat(oneHour[oneHour.length - 24].open);
-    } else if (oneHour.length > 1) {
-      prevPrice = parseFloat(oneHour[0].open);
-    }
-    const dayChange = prevPrice ? ((lastPrice - prevPrice) / prevPrice) * 100 : 0;
+    const lastPrice = parseFloat(tickerDetails.lastPrice);
+    const prevClose = parseFloat(tickerDetails.prevPrice24h ?? lastPrice);
+    const dayChange = prevClose ? ((lastPrice - prevClose) / prevClose) * 100 : 0;
 
     const result = {
       ticker: symbol,
-      longName: `${symbol} (Binance)`,
+      longName: `${symbol} (Bybit)`,
       currentPrice: lastPrice,
       dayChange,
-      candles4H: fourHour,
-      candles1H: oneHour,
+      candles4H: fourHourData,
+      candles1H: oneHourData,
       currencySymbol: "$",
     };
 
     cacheSet(_quoteCache, cacheKey, result);
     return result;
   } catch (error) {
-    console.error(`[api/cryptoQuote] SDK error for ${symbol}:`, error.message);
-    // Tenta retornar cache mesmo que expirado
+    console.error(`[api/cryptoQuote] Bybit error for ${symbol}:`, error.message);
     const expired = _quoteCache.get(cacheKey);
     if (expired && expired.data) {
       console.warn(`[api/cryptoQuote] Returning stale cached quote for ${symbol}`);

@@ -458,7 +458,7 @@ export default function App() {
       <div className="app">
         <div className="hdr">
           <div className="logo">📈 StockRadar</div>
-          <div className="sub">Análise Técnica · Yahoo Finance / Binance · Dados Reais</div>
+          <div className="sub">Análise Técnica · Yahoo Finance / Bybit · Dados Reais</div>
           {currentLastScan && <div className="last">Último scan: {currentLastScan.toLocaleTimeString("pt-BR")} · {currentLastScan.toLocaleDateString("pt-BR")}</div>}
         </div>
 
@@ -476,12 +476,12 @@ export default function App() {
 
         {!currentScanDone && !loading && (
           <div className="warn-box">
-            <strong>⚠️ Importante:</strong> o scanner crypto usa Binance API via backend, o scanner de ações usa Yahoo Finance. O app evita CORS no navegador usando API interna.
+            <strong>⚠️ Importante:</strong> o scanner crypto usa Bybit API via backend, o scanner de ações usa Yahoo Finance. O app evita CORS no navegador usando API interna.
           </div>
         )}
 
         <div className="ctrl">
-          <div className="ctrl-title">{activeTab === "crypto" ? "Lista de Criptos (Binance)" : "Lista de Ações (B3)"}</div>
+          <div className="ctrl-title">{activeTab === "crypto" ? "Lista de Criptos (Bybit)" : "Lista de Ações (B3)"}</div>
           <div className="chips">
             {tickers.map((t) => (
               <div key={t} className="chip">
