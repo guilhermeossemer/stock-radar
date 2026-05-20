@@ -1,5 +1,6 @@
-import Binance from 'binance-api-node';
+import BinanceModule from 'binance-api-node';
 
+const Binance = BinanceModule.default;
 const _quoteCache = new Map();
 const _klinesCache = new Map();
 
