@@ -8,6 +8,8 @@ import ExplanationCard from "./ExplanationCard.jsx";
 
 export default function StockCard({ data, index }) {
   const categoryClass = data.category.toLowerCase().replace("_", "-");
+  const hasPrice = Number.isFinite(data.currentPrice);
+  const hasDayChange = Number.isFinite(data.dayChange);
   return (
     <div className={`card card-${categoryClass}`} style={{ animationDelay: `${index * 45}ms` }}>
       <div className={`stripe stripe-${categoryClass}`} />
@@ -15,12 +17,12 @@ export default function StockCard({ data, index }) {
         <div>
           <div className="ticker">{data.ticker}</div>
           <div className="name" title={data.longName}>{data.longName}</div>
-          <div className={`delta ${data.dayChange >= 0 ? "pos" : "neg"}`}>
-            {data.dayChange >= 0 ? "▲" : "▼"} {Math.abs(data.dayChange ?? 0).toFixed(2)}%
+          <div className={`delta ${hasDayChange ? (data.dayChange >= 0 ? "pos" : "neg") : ""}`}>
+            {hasDayChange ? (data.dayChange >= 0 ? "▲" : "▼") : ""} {hasDayChange ? `${Math.abs(data.dayChange).toFixed(2)}%` : "–"}
           </div>
         </div>
         <div className="header-right">
-          <div className="price">{data.currencySymbol ?? "R$"} {data.currentPrice.toFixed(2)}</div>
+          <div className="price">{hasPrice ? `${data.currencySymbol ?? "R$"} ${data.currentPrice.toFixed(2)}` : "Dados temporariamente indisponíveis"}</div>
           <div className={`pill pill-${categoryClass}`}>
             {data.category === "OBSERVACAO" ? "OBSERVAÇÃO" : data.category.replace("_", " ")}
           </div>

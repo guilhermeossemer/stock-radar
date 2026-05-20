@@ -130,19 +130,54 @@ export default function App() {
     const good = [];
     const bad = [];
 
-    for (let i = 0; i < tickers.length; i++) {
-      const ticker = tickers[i];
-      try {
-        setProxyStatus(`Buscando ${ticker}...`);
-        const raw = await fetchQuote(ticker, activeTab);
-        const analyzed = activeTab === "crypto" ? analyzeCrypto(raw) : analyzeStock(raw);
-        good.push(analyzed);
-      } catch (error) {
-        bad.push({ ticker, msg: error?.message || "Erro desconhecido" });
-      }
-      setProgress({ done: i + 1, total: tickers.length });
-      setResults((prev) => ({ ...prev, [activeTab]: [...good].sort((a, b) => b.score - a.score) }));
-    }
+    // Concurrency control: for crypto, allow up to 2 concurrent requests; for stocks, keep sequential
+    const concurrency = activeTab === "crypto" ? 2 : 1;
+    const delayBetweenStarts = activeTab === "crypto" ? 500 : 0; // ms
+
+    let index = 0;
+    let inFlight = 0;
+
+    await new Promise((resolve) => {
+      const tryStart = () => {
+        while (inFlight < concurrency && index < tickers.length) {
+          const ticker = tickers[index++];
+          inFlight++;
+
+          (async (t) => {
+            try {
+              setProxyStatus(`Buscando ${t}...`);
+              const raw = await fetchQuote(t, activeTab);
+              const analyzed = activeTab === "crypto" ? analyzeCrypto(raw) : analyzeStock(raw);
+              good.push(analyzed);
+            } catch (error) {
+              bad.push({ ticker: t, msg: error?.message || "Erro desconhecido" });
+            } finally {
+              inFlight--;
+              setProgress({ done: Math.min(good.length + bad.length, tickers.length), total: tickers.length });
+              setResults((prev) => ({ ...prev, [activeTab]: [...good].sort((a, b) => b.score - a.score) }));
+              // start next after a small delay when in crypto mode
+              if (delayBetweenStarts > 0) {
+                setTimeout(() => {
+                  if (index >= tickers.length && inFlight === 0) resolve();
+                  else tryStart();
+                }, delayBetweenStarts);
+              } else {
+                if (index >= tickers.length && inFlight === 0) resolve();
+                else tryStart();
+              }
+            }
+          })(ticker);
+
+          // if we scheduled a start delay between tasks, break to let timer handle next start
+          if (delayBetweenStarts > 0) break;
+        }
+
+        // all done
+        if (index >= tickers.length && inFlight === 0) resolve();
+      };
+
+      tryStart();
+    });
 
     setErrors((prev) => ({ ...prev, [activeTab]: bad }));
     setLastScan((prev) => ({ ...prev, [activeTab]: new Date() }));
