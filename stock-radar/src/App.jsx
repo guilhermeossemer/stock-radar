@@ -1,11 +1,9 @@
 import { useState, useMemo, useCallback, useEffect } from "react";
 import { fetchQuote } from "./services/yahooService.js";
 import { analyzeStock } from "./utils/scoring.js";
-import { analyzeCrypto } from "./utils/cryptoScoring.js";
 import StockCard from "./components/StockCard.jsx";
 
 const STOCK_STORAGE_KEY = "stockRadarTickers";
-const CRYPTO_STORAGE_KEY = "stockRadarCryptoTickers";
 const DEFAULT_TICKERS = [
   "ITUB4",
   "BBDC4",
@@ -39,22 +37,8 @@ const DEFAULT_TICKERS = [
   "ORVR3",
   "VBBR3",
 ];
-const DEFAULT_CRYPTO_TICKERS = [
-  "BTCUSDT",
-  "ETHUSDT",
-  "SOLUSDT",
-  "BNBUSDT",
-  "XRPUSDT",
-  "DOGEUSDT",
-  "AVAXUSDT",
-  "LINKUSDT",
-  "ARBUSDT",
-  "SUIUSDT",
-];
-const TABS = [
-  { key: "stocks", label: "Ações" },
-  { key: "crypto", label: "Criptos" },
-];
+
+// Cripto removido temporariamente devido a restrições de APIs de exchanges em ambiente serverless (Vercel). Estrutura poderá ser reativada futuramente utilizando backend dedicado/VPS.
 
 function loadSavedTickers(storageKey, fallback) {
   if (typeof window === "undefined") return fallback;
@@ -91,51 +75,41 @@ const FILTER_OPTIONS = [
 
 // ─── MAIN ─────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [activeTab, setActiveTab] = useState("stocks");
-  const [tickerInputs, setTickerInputs] = useState(() => ({
-    stocks: loadSavedTickers(STOCK_STORAGE_KEY, DEFAULT_TICKERS).join(", "),
-    crypto: loadSavedTickers(CRYPTO_STORAGE_KEY, DEFAULT_CRYPTO_TICKERS).join(", "),
-  }));
+  const [tickerInput, setTickerInput] = useState(() => loadSavedTickers(STOCK_STORAGE_KEY, DEFAULT_TICKERS).join(", "));
   const [newTicker, setNewTicker] = useState("");
-  const [results, setResults] = useState({ stocks: [], crypto: [] });
-  const [errors, setErrors] = useState({ stocks: [], crypto: [] });
+  const [results, setResults] = useState([]);
+  const [errors, setErrors] = useState([]);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState({ done: 0, total: 0 });
-  const [lastScan, setLastScan] = useState({ stocks: null, crypto: null });
+  const [lastScan, setLastScan] = useState(null);
   const [filter, setFilter] = useState("all");
-  const [scanDone, setScanDone] = useState({ stocks: false, crypto: false });
+  const [scanDone, setScanDone] = useState(false);
   const [proxyStatus, setProxyStatus] = useState("");
 
-  const tickerInput = tickerInputs[activeTab];
   const tickers = useMemo(() => getTickerList(tickerInput), [tickerInput]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      localStorage.setItem(STOCK_STORAGE_KEY, JSON.stringify(getTickerList(tickerInputs.stocks)));
-      localStorage.setItem(CRYPTO_STORAGE_KEY, JSON.stringify(getTickerList(tickerInputs.crypto)));
+      localStorage.setItem(STOCK_STORAGE_KEY, JSON.stringify(getTickerList(tickerInput)));
     } catch (error) {
       console.warn("Failed to save tickers", error);
     }
-  }, [tickerInputs]);
+  }, [tickerInput]);
 
   const runAnalysis = useCallback(async () => {
     setLoading(true);
-    setScanDone((prev) => ({ ...prev, [activeTab]: false }));
-    setResults((prev) => ({ ...prev, [activeTab]: [] }));
-    setErrors((prev) => ({ ...prev, [activeTab]: [] }));
+    setScanDone(false);
+    setResults([]);
+    setErrors([]);
     setProgress({ done: 0, total: tickers.length });
     setProxyStatus("Coletando dados...");
 
     const good = [];
     const bad = [];
-
-    // Concurrency control: for crypto, allow up to 2 concurrent requests; for stocks, keep sequential
-    const concurrency = activeTab === "crypto" ? 2 : 1;
-    const delayBetweenStarts = activeTab === "crypto" ? 500 : 0; // ms
-
     let index = 0;
     let inFlight = 0;
+    const concurrency = 1;
 
     await new Promise((resolve) => {
       const tryStart = () => {
@@ -146,63 +120,51 @@ export default function App() {
           (async (t) => {
             try {
               setProxyStatus(`Buscando ${t}...`);
-              const raw = await fetchQuote(t, activeTab);
-              const analyzed = activeTab === "crypto" ? analyzeCrypto(raw) : analyzeStock(raw);
+              const raw = await fetchQuote(t, "stocks");
+              const analyzed = analyzeStock(raw);
               good.push(analyzed);
             } catch (error) {
               bad.push({ ticker: t, msg: error?.message || "Erro desconhecido" });
             } finally {
               inFlight--;
               setProgress({ done: Math.min(good.length + bad.length, tickers.length), total: tickers.length });
-              setResults((prev) => ({ ...prev, [activeTab]: [...good].sort((a, b) => b.score - a.score) }));
-              // start next after a small delay when in crypto mode
-              if (delayBetweenStarts > 0) {
-                setTimeout(() => {
-                  if (index >= tickers.length && inFlight === 0) resolve();
-                  else tryStart();
-                }, delayBetweenStarts);
-              } else {
-                if (index >= tickers.length && inFlight === 0) resolve();
-                else tryStart();
-              }
+              setResults([...good].sort((a, b) => b.score - a.score));
+              if (index >= tickers.length && inFlight === 0) resolve();
+              else tryStart();
             }
           })(ticker);
-
-          // if we scheduled a start delay between tasks, break to let timer handle next start
-          if (delayBetweenStarts > 0) break;
         }
 
-        // all done
         if (index >= tickers.length && inFlight === 0) resolve();
       };
 
       tryStart();
     });
 
-    setErrors((prev) => ({ ...prev, [activeTab]: bad }));
-    setLastScan((prev) => ({ ...prev, [activeTab]: new Date() }));
+    setErrors(bad);
+    setLastScan(new Date());
     setLoading(false);
-    setScanDone((prev) => ({ ...prev, [activeTab]: true }));
+    setScanDone(true);
     setProxyStatus("");
-  }, [tickers, activeTab]);
+  }, [tickers]);
 
   const addTicker = () => {
     const ticker = newTicker.trim().toUpperCase();
     if (!ticker) return;
     if (!tickers.includes(ticker)) {
-      setTickerInputs((prev) => ({ ...prev, [activeTab]: [...tickers, ticker].join(", ") }));
+      setTickerInput([...tickers, ticker].join(", "));
     }
     setNewTicker("");
   };
 
   const removeTicker = (ticker) => {
-    setTickerInputs((prev) => ({ ...prev, [activeTab]: tickers.filter((item) => item !== ticker).join(", ") }));
+    setTickerInput(tickers.filter((item) => item !== ticker).join(", "));
   };
 
-  const currentResults = results[activeTab];
-  const currentErrors = errors[activeTab];
-  const currentScanDone = scanDone[activeTab];
-  const currentLastScan = lastScan[activeTab];
+  const currentResults = results;
+  const currentErrors = errors;
+  const currentScanDone = scanDone;
+  const currentLastScan = lastScan;
 
   const filteredResults = useMemo(() => {
     if (filter === "all") return currentResults;
@@ -458,30 +420,14 @@ export default function App() {
       <div className="app">
         <div className="hdr">
           <div className="logo">📈 StockRadar</div>
-          <div className="sub">Análise Técnica · Yahoo Finance / Bybit · Dados Reais</div>
+          <div className="sub">Análise Técnica · Yahoo Finance · Dados Reais</div>
           {currentLastScan && <div className="last">Último scan: {currentLastScan.toLocaleTimeString("pt-BR")} · {currentLastScan.toLocaleDateString("pt-BR")}</div>}
         </div>
 
-        <div className="tab-bar">
-          {TABS.map((tab) => (
-            <button
-              key={tab.key}
-              className={`tab ${activeTab === tab.key ? "active" : ""}`}
-              onClick={() => setActiveTab(tab.key)}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
 
-        {!currentScanDone && !loading && (
-          <div className="warn-box">
-            <strong>⚠️ Importante:</strong> o scanner crypto usa Bybit API via backend, o scanner de ações usa Yahoo Finance. O app evita CORS no navegador usando API interna.
-          </div>
-        )}
 
         <div className="ctrl">
-          <div className="ctrl-title">{activeTab === "crypto" ? "Lista de Criptos (Bybit)" : "Lista de Ações (B3)"}</div>
+          <div className="ctrl-title">Lista de Ações (B3)</div>
           <div className="chips">
             {tickers.map((t) => (
               <div key={t} className="chip">
@@ -493,16 +439,16 @@ export default function App() {
           <div className="add-row">
             <input
               className="add-in"
-              placeholder={activeTab === "crypto" ? "ex: BTCUSDT" : "ex: ITSA4"}
+              placeholder="ex: ITSA4"
               value={newTicker}
               onChange={(e) => setNewTicker(e.target.value.toUpperCase())}
               onKeyDown={(e) => e.key === "Enter" && addTicker()}
-              maxLength={activeTab === "crypto" ? 12 : 6}
+              maxLength={6}
             />
             <button className="btn btn-add" onClick={addTicker}>+ Adicionar</button>
           </div>
           <button className="btn btn-scan" onClick={runAnalysis} disabled={loading}>
-            {loading ? `🔍 ${proxyStatus || "Carregando..."} (${progress.done}/${progress.total})` : `🚀 ${activeTab === "crypto" ? "Rodar Scanner de Criptos" : "Rodar Scanner de Ações"}`}
+            {loading ? `🔍 ${proxyStatus || "Carregando..."} (${progress.done}/${progress.total})` : "🚀 Rodar Scanner de Ações"}
           </button>
         </div>
 
@@ -542,7 +488,7 @@ export default function App() {
         {loading && currentResults.length === 0 ? (
           <div className="loading">
             <div className="spinner" />
-            <div className="load-txt">Buscando dados reais de {activeTab === "crypto" ? "criptos" : "ações"}...</div>
+            <div className="load-txt">Buscando dados reais de ações...</div>
             <div className="load-sub">{proxyStatus}</div>
           </div>
         ) : filteredResults.length > 0 ? (
@@ -556,7 +502,7 @@ export default function App() {
         ) : !currentScanDone ? (
           <div className="empty">
             <div className="empty-ico">📊</div>
-            <div>Clique em <strong>{activeTab === "crypto" ? "Rodar Scanner de Criptos" : "Rodar Scanner de Ações"}</strong> para buscar dados reais</div>
+            <div>Clique em <strong>Rodar Scanner de Ações</strong> para buscar dados reais</div>
           </div>
         ) : null}
 

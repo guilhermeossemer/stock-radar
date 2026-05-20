@@ -35,7 +35,6 @@ function createApiMiddleware(handler) {
 
 const apiRoutes = {
   '/api/quote': () => import('./api/quote.js').then((mod) => mod.default),
-  '/api/cryptoQuote': () => import('./api/cryptoQuote.js').then((mod) => mod.default),
   '/api/history': () => import('./api/history.js').then((mod) => mod.default),
 }
 
